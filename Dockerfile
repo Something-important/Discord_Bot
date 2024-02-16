@@ -1,4 +1,4 @@
-FROM node:18.19.0-bullseye-slim
+FROM node:18.19.0-alpine
 WORKDIR /usr/src/app
 COPY . /usr/src/app
 RUN npm ci --only=production
