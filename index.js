@@ -1,7 +1,15 @@
+// Load environment variables from the .env file
 require('dotenv').config();
-const objects = require('./list.js');
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 
+// Import necessary Discord.js classes
+const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ButtonStyle, ActionRowBuilder, ButtonBuilder } = require('discord.js');
+const axios = require('axios');
+
+// Import objects and options from external files
+const objects = require('./list.js');   // Contains direct URL queries
+const options = require('./options.js'); // Contains queries requiring user input
+
+// Create the bot client instance
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -10,85 +18,239 @@ const client = new Client({
   ]
 });
 
+// Define slash commands
 const commands = [
   new SlashCommandBuilder()
     .setName('search')
     .setDescription('Search for an object')
-    .addStringOption(option => 
+    .addStringOption(option =>
       option.setName('query')
         .setDescription('The name to search for')
-        .setRequired(true))
+        .setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('socials')
+    .setDescription('Get our social media links'),
+  new SlashCommandBuilder()
+    .setName('help')
+    .setDescription('Get help with using the bot'),
+  new SlashCommandBuilder()
+    .setName('chuck')
+    .setDescription('Get a random Chuck Norris joke')
 ];
 
+// Set up REST API instance
 const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
 
+// Register commands when the bot is ready
 client.once('ready', async () => {
   console.log('Bot is ready!');
-  
-  // Get the ID of the first guild the bot is in
-  const guild = client.guilds.cache.first();
-  if (!guild) {
-    console.log('Bot is not in any guild');
-    return;
-  }
-
   try {
-    console.log('Started refreshing application (/) commands.');
-
+    console.log('Registering slash commands.');
     await rest.put(
-      Routes.applicationGuildCommands(client.user.id, guild.id),
-      { body: commands },
+      Routes.applicationCommands(client.user.id),
+      { body: commands }
     );
-
-    console.log('Successfully reloaded application (/) commands.');
+    console.log('Slash commands registered successfully.');
   } catch (error) {
-    console.error(error);
+    console.error('Error registering slash commands:', error);
   }
 });
 
-// Function to search objects
-function searchObjects(query) {
-  return objects.filter(x => x.name.toLowerCase().includes(query.toLowerCase()));
-}
-
-// Handle message creation event (existing functionality)
-client.on("messageCreate", (message) => {
-  if (message.author.bot) return; // Ignore messages from bots
-
-  try {
-    let res = searchObjects(message.content);
-    if (res.length > 0) {
-      if (res[0].URL) {
-        message.channel.send(res[0].URL);
-      }
-    } else {
-      console.log("No matching object found for message:", message.content);
-    }
-  } catch (error) {
-    console.error(`Error processing message: ${error}`);
-  }
-});
-
-// Handle slash command interactions
+// Handle interactions
 client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
 
-  const { commandName } = interaction;
+  try {
+    switch (interaction.commandName) {
+      case 'help':
+        const helpMessage = `Available commands:
+        /help - Get help with using the bot
+        /chuck - Get a random Chuck Norris joke
+        /search - Search for an object
+        /socials - Get our social media links`;
+        await interaction.reply({
+          content: helpMessage,
+          flags: ['Ephemeral'] // Sends the help message as ephemeral (only the user sees it)
+        });
+        break;
 
-  if (commandName === 'search') {
-    const query = interaction.options.getString('query');
-    let res = searchObjects(query);
+      case 'chuck':
+        // Handle the chuck command
+        await interaction.deferReply();
+        try {
+          const response = await axios.get('https://api.chucknorris.io/jokes/random');
+          await interaction.editReply(response.data.value);
+        } catch (error) {
+          console.error('Chuck Norris API error:', error);
+          await interaction.followUp({
+            content: "Sorry, couldn't fetch a joke right now. Please try again later.",
+            flags: ['Ephemeral']
+          });
+        }
+        break;
 
-    if (res.length > 0) {
-      if (res[0].URL) {
-        await interaction.reply(res[0].URL);
-      } else {
-        await interaction.reply('Found an object, but it has no URL.');
-      }
-    } else {
-      await interaction.reply('No matching object found.');
+      case 'search':
+        // Handle the search command
+        const query = interaction.options.getString('query');
+
+        // Find if the query matches any direct URL
+        let res = objects.filter(item => item.name.toLowerCase() === query.toLowerCase());
+
+        if (res.length > 0) {
+          // If direct match is found, send URL
+          await interaction.reply({
+            content: `You selected: ${res[0].name}. Here's the link: ${res[0].URL}`,
+            flags: 64 // Ephemeral flag
+          });
+          return;
+        }
+
+        // Find if the query matches any options-based search
+        let optionsRes = options.find(item => item.name.toLowerCase() === query.toLowerCase());
+
+        if (optionsRes) {
+          // Send buttons for the user to choose
+          let response = `Please choose an option from the list below:\n`;
+
+          // Create an ActionRowBuilder with ButtonBuilder components
+          const row = new ActionRowBuilder().addComponents(
+            optionsRes.options.map((option, index) =>
+              new ButtonBuilder()
+                .setCustomId(`option_${index + 1}`)
+                .setLabel(option.name)
+                .setStyle(ButtonStyle.Primary)
+            )
+          );
+
+          // Send the options with buttons
+          const message = await interaction.reply({
+            content: response,
+            components: [row],
+            flags: 64,  // Ephemeral flag
+          });
+
+          // Listen for the button click event
+          const filter = i => i.user.id === interaction.user.id && i.isButton();
+          const collector = interaction.channel.createMessageComponentCollector({ filter, time: 30000 });
+
+          collector.on('collect', async i => {
+            // Ignore the button click if the user already responded
+            if (i.replied) return;
+
+            const buttonIndex = parseInt(i.customId.split('_')[1]) - 1;
+            const selectedOption = optionsRes.options[buttonIndex];
+
+            // Respond with the selected option and its link
+            if (selectedOption.URL) {
+              await i.reply({
+                content: `You selected: ${selectedOption.name}. Here's the link: ${selectedOption.URL}`,
+                flags: 64 // Ephemeral flag
+              });
+            } else {
+              await i.reply({
+                content: `You selected: ${selectedOption.name}. No URL available.`,
+                flags: 64 // Ephemeral flag
+              });
+            }
+
+            // Disable the buttons after the user selects one
+            const disabledRow = new ActionRowBuilder().addComponents(
+              optionsRes.options.map((option, index) =>
+                new ButtonBuilder()
+                  .setCustomId(`disabled_${index + 1}`) // Ensure custom_id is still included
+                  .setLabel('Option Disabled')
+                  .setStyle(ButtonStyle.Secondary)
+                  .setDisabled(true)
+              )
+            );
+
+            // Edit the original message with disabled buttons
+            await message.edit({
+              content: `You selected: ${selectedOption.name}. Here's the link: ${selectedOption.URL || 'No URL available.'}`,
+              components: [disabledRow],
+            });
+
+            // Stop the collector right away after responding
+            collector.stop();
+          });
+
+          collector.on('end', async (collected, reason) => {
+            if (reason === 'time') {
+              const timeoutMessage = `Hey ${interaction.user}, looks like you took too long to respond!`;
+              await interaction.followUp({
+                content: timeoutMessage,
+                flags: 64  // Ephemeral flag
+              });
+            }
+
+            // Only disable the buttons and update the message if no response was collected
+            if (reason === 'time') {
+              const disabledRow = new ActionRowBuilder().addComponents(
+                optionsRes.options.map((option, index) =>
+                  new ButtonBuilder()
+                    .setCustomId(`disabled_${index + 1}`)
+                    .setLabel('Option Disabled')
+                    .setStyle(ButtonStyle.Secondary)
+                    .setDisabled(true)
+                )
+              );
+
+              try {
+                await message.edit({
+                  content: "You took too long to respond. The options are now disabled.",
+                  components: [disabledRow],
+                });
+              } catch (error) {
+                console.error('Error editing message:', error);
+              }
+            }
+          });
+        } else {
+          await interaction.reply({
+            content: `No matching object found for "${query}".`,
+            flags: 64 // Ephemeral flag
+          });
+        }
+        break;
+
+      case 'socials':
+        // Handle the socials command
+        const socialLinks = [
+          { name: 'Linktree', url: 'https://linktr.ee/snailsnft' },
+          { name: 'Medium', url: 'https://medium.com/@snailsnft/' },
+          { name: 'OmniFlix', url: 'https://omniflix.tv/channel/65182782e1c28773aa199c84' },
+          { name: 'YouTube', url: 'https://www.youtube.com/@SNAILS._/videos' }
+        ];
+
+        let response = 'Here are our social media links:\n';
+        socialLinks.forEach(link => {
+          response += `${link.name}: ${link.url}\n`;
+        });
+
+        await interaction.reply({
+          content: response,
+          flags: 64  // Ephemeral flag
+        });
+        break;
+
+      default:
+        break;
     }
+  } catch (error) {
+    console.error(`Error handling ${interaction.commandName} command:`, error);
+    await interaction.reply({
+      content: "An error occurred. Please try again later.",
+      flags: ['Ephemeral']
+    });
   }
 });
 
-client.login(process.env.TOKEN);
+// Error handling for client
+client.on('error', error => {
+  console.error('Discord client error:', error);
+});
+
+// Log in the bot using the token
+client.login(process.env.TOKEN).catch(error => {
+  console.error('Error logging in:', error);
+});
