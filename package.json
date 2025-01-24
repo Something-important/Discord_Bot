@@ -4,7 +4,8 @@
   "type": "commonjs",
   "main": "index.js",
   "dependencies": {
-    "discord.js": "^14.15.3",
+    "axios": "^1.7.9",
+    "discord.js": "^14.17.2",
     "dotenv": "^16.4.5"
   },
   "scripts": {
